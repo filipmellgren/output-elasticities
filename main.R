@@ -80,7 +80,7 @@ ivp$p <- ivp$value / ivp$q
 good_mean_price <- ivp |>
   fgroup_by(good_id, year) |>
   fselect(p) |>
-  fmean(w = ivp$revenue)
+  fmean(w = ivp$value)
 names(good_mean_price) <- c("good_id", "year", "good_mean_price")
 
 ivp <- merge(ivp, good_mean_price, by = c("good_id", "year"))
