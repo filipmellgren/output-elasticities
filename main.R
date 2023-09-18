@@ -80,16 +80,21 @@ ivp$p <- ivp$value / ivp$q
 good_mean_price <- ivp |>
   fgroup_by(good_id, year) |>
   fselect(p) |>
-  fmean(w = ivp$value)
+  fmean(w = ivp$revenue)
 names(good_mean_price) <- c("good_id", "year", "good_mean_price")
 
 ivp <- merge(ivp, good_mean_price, by = c("good_id", "year"))
 ivp$p <- ivp$p / ivp$good_mean_price
 
+firm_revenue <- ivp %>% group_by(year, firm_id) %>%
+  summarise(firm_revenue = sum(value)) %>% ungroup()
+
 ivp <- ivp |>
   fgroup_by(firm_id, year) |>
   fselect(p) |>
   fmean(w = ivp$value)
+
+ivp <- merge(ivp, data.table(firm_revenue), by = c("year", "firm_id"))
 
 # Trim observations
 QTILE_TRIM <- 0.02
@@ -100,6 +105,9 @@ ivp <- subset(ivp, ivp$p > low_p & ivp$p < high_p)
 
 # Combine ####
 df <- merge(ivp, fek, by = c("firm_id", "year"))
+
+cor(df$firm_revenue, df$prod_value) # Note only 0.48 cor between fek and ivp prod val.
+
 # Note, quantity defined using FEK production value, not IVP prod value from where price came.
 df$q <- df$prod_value / df$p
 
@@ -115,6 +123,8 @@ df$k <- log_dev_from_mean(df$capital)
 df$m <- log_dev_from_mean(df$input_goods)
 
 # Estimate output elasticity for manufacturing ####
+MIN_OBS <- 50
+markup1.firm <- 0.5 # median firm has mu = 1.
 
 prodest_sector <- function(sector, yvar, df) {
   tmp <- data.table(df)[group_id == sector]
@@ -125,17 +135,22 @@ prodest_sector <- function(sector, yvar, df) {
                          idvar = tmp$firm_id,
                          timevar = tmp$year
   )
-  
-  return(cbind("group_id" = sector, t(data.frame(fit@Estimates$pars))))
+  estims <- t(data.frame(fit@Estimates$pars))
+  std.errors <- t(data.frame(fit@Estimates$std.errors))
+
+  return(cbind("group_id" = sector, estim = estims[[1]], se = std.errors[[1]]))
 }
 
 df[["group_id"]] <-  df  |>
   group_by(sni2, sni_regime)  |>
   group_indices()
 
+groupid.key <- df %>%
+  distinct(group_id, sni2, sni_regime)
+
 sectors <- df %>% group_by(group_id) %>%
   summarise(count = n()) %>%
-  ungroup() %>% filter(count > 50) %>%
+  ungroup() %>% filter(count >= MIN_OBS) %>%
   pull(group_id)
 
 tmp <- lapply(sectors, prodest_sector, "q", df)
@@ -144,15 +159,14 @@ prod_fun.q <- data.frame(do.call(rbind, tmp))
 tmp <- lapply(sectors, prodest_sector, "val", df)
 prod_fun.val <- data.frame(do.call(rbind, tmp))
 
-cost_share_o_elas <- df |> group_by(group_id) |>
-  summarise(cost_share_o_elas = quantile(labor_share , 0.5)) |>
+oelas.cost_share <- df |>
+  group_by(group_id) |>
+  summarise(oelas.cost_share = quantile(labor_share , markup1.firm)) |>
   ungroup()
 
-cor(prod_fun.val$fX1, prod_fun.q$fX1)
-
-tmp <- merge(cost_share_o_elas, prod_fun.q)
-
-cor(tmp$fX1, tmp$cost_share_o_elas)
+output_elasticities <- merge(oelas.cost_share, prod_fun.q, all.x = TRUE) 
+output_elasticities <- merge(output_elasticities, groupid.key)
+write.csv(output_elasticities, "output/ivp_oelas.csv")
 
 # For FEK data only, accepting the slight p bias. ####
 df <- fek
