@@ -1,4 +1,4 @@
-ata, # output-elasticities
+# output-elasticities
 Code for cleaning manufacturing data and estimate production functions. It outputs estimates for the variable input's (labor in this care) output elasticity estimated using q data.
 
 # Some comments
