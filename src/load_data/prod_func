@@ -1,0 +1,109 @@
+library(prodest)
+library(data.table)
+data(chilean)
+head(chilean)
+
+gmm_loss <- function(params, idvar, timevar, output_pred, input) {
+  degree <- sqrt(length(params) - 1)
+  # Step 2: Estimate productivity
+
+  d <- data.table(cbind(idvar, timevar))
+  names(d) <- c("idvar", "timevar")
+  
+  first_order_vars <- input[, attributes(input)$degree == 1]
+  d$output_pred <- output_pred
+  d$capital <- first_order_vars[, 1]
+  d$labor <- first_order_vars[, 2]
+  
+  d$labor.lag <- lagPanel(idvar, timevar, d$labor)
+  d$capital.lag <- lagPanel(idvar, timevar, d$capital)
+  d$output.lag <- lagPanel(idvar, timevar, output_pred)
+  d$prod_est <- d$output_pred -  cbind(d$labor, d$capital) %*% params
+  d$prod_est.lag <- d$output.lag - cbind(d$labor.lag, d$capital.lag) %*% params
+  
+  d <- na.omit(d)
+
+  prod_est.lag_pol <- as.matrix(polym(d$prod_est.lag, degree = 3))
+  prod_est.lag_pol <- cbind(prod_est.lag_pol , 1)
+
+  
+  mZ <- cbind(d$labor.lag, d$capital)
+  mW <- solve(crossprod(cbind(d$labor.lag, d$capital))) / nrow(d)
+
+  g_b <- solve(crossprod(prod_est.lag_pol)) %*% t(prod_est.lag_pol) %*% d$prod_est
+  XI <- d$prod_est - prod_est.lag_pol %*% g_b
+  crit <- t(crossprod(mZ, XI)) %*% mW %*% (crossprod(mZ, XI))
+  
+  # TODO: what to do when there is a one year gap?
+  #vars_to_lag <- c("prod_est", "labor")
+  #lag_vars_names <- paste(vars_to_lag, "lag", sep = ".")
+  #d[, (lag_vars_names) := shift(.SD), by = idvar, .SDcols = vars_to_lag]
+  #d$labor.lag <- lagPanel(idvar, timevar, labor)
+  #d$prod_est.lag <- lagPanel(idvar, timevar, prod_est)
+  #d <- na.omit(d)
+  #m2 <- lm(prod_est ~ prod_est.lag + prod_est.lag^2 -1, data = d)
+  # Save residuals
+  #prod_shock <- residuals(m2)
+
+  #moments <- prod_shock * polym(d$capital, d$labor.lag, degree = degree, raw = TRUE)
+
+  #weight_matrix <- solve(var(moments))
+
+  #loss <- t(colMeans(moments)) %*% weight_matrix %*% colMeans(moments)
+
+  return(crit)
+}
+
+prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 2) {
+  input <- polym(capital, labor, material, degree = 2, raw = TRUE)
+
+  first_stage <- lm(output ~ input)  
+  # Z includes labor.lag, capital
+  # X includes labor, capital
+  # lX includes labor.lag, capital.lag
+  # regvars <-  cbind(mod, fX^2, sX^2, pX^2)
+  param0 <- rep(1, degree ^2 + 1) / (degree ^2 + 1) + rnorm(degree ^2 + 1, 0, 0.01)
+  param0[1] <- coef(first_stage)[4]
+  param0[2] <- coef(first_stage)[2]
+  #param0 <- coef(first_stage)[2:(1 + degree)] + rnorm((2, 0, 0.01)
+  result <- optim(par = param0, fn = gmm_loss,
+    idvar = idvar, timevar = timevar,
+    output_pred = fitted(first_stage), input = input,
+    method = "BFGS")
+
+    return(result)
+}
+
+# Test ground
+# TODO: it works for Cobb Douglas. Test for Translog.
+prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1)
+
+# TODO: names for coefficents and clearer what input is. Also notice I haven't calucalted output elasticities yet.
+# TODO: CObb-Douglas case
+# use lapply() over groups. 
+# TODO: Bootstrap standard errors
+
+prodestACF(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
+
+prodestWRDG(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
+prodestWRDG_GMM(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
+myestims <- prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
+
+# Y, fX, sX, pX, idvar, timevar
+head(polym(capital, labor, degree = 1, raw = TRUE))
+
+polyframe <- data.frame(chilean$fX2, chilean$sX, chilean$pX)
+head(model.matrix(~.^2 - 1, data = polyframe))
+
+perform_block_bootstrap <- function(df, num_bootstraps = 1000) {
+    n <- nrow(df)
+    # Sample with replacement, maintaining block structure
+    bootstrap_estimates <- numeric(length = num_bootstraps)
+    for (i in 1:num_bootstraps) {
+        bootstrap_sample <- df[sample(1:n, replace = TRUE), ]
+        bootstrap_estimates[i] <- prod_est(bootstrap_sample,
+            "prod_value", "employees", "capital", "input_goods")
+        }
+
+    return(bootstrap_estimates)
+  }
