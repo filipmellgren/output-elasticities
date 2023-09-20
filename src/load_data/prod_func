@@ -1,24 +1,12 @@
 library(prodest)
 library(data.table)
+library(boot)
 data(chilean)
 head(chilean)
 
-gmm_loss <- function(params, idvar, timevar, output_pred, input) {
+gmm_loss <- function(params, d) {
   
   degree <- sqrt(length(params) - 1)
-
-  d <- data.table(input)
-  d$idvar <- idvar
-  d$timevar <- timevar
-
-  d$output_pred <- output_pred
-  setnames(d, c("1.0.0", "0.1.0"), c("labor", "capital"))
-
-  d$labor.lag <- lagPanel(idvar, timevar, d$labor)
-  d$capital.lag <- lagPanel(idvar, timevar, d$capital)
-  d$output.lag <- lagPanel(idvar, timevar, d$output_pred)
-
-  d <- na.omit(d)
 
   prod_vars <- polym(d$labor, d$capital, degree = degree, raw = TRUE)
   d$prod_est <- d$output_pred - prod_vars %*% params
@@ -40,7 +28,7 @@ gmm_loss <- function(params, idvar, timevar, output_pred, input) {
   return(crit)
 }
 
-prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 2) {
+prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 2, num_bootstrap = 10) {
   #' Estimate production function parameters
   #' Caution: Results can be unstable and depend on optimization algorithm.
   #' Need to implement bootstrapped standard errors to quantify uncertainty.
@@ -67,46 +55,31 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
   param0 <- first_stage$coef[c(FALSE, attributes(input)$degree <= degree)]
   param0 <- param0[1:(degree^2 + 1)] + rnorm(degree^2 + 1, 0, 0.01)
 
-  result <- optim(par = param0, fn = gmm_loss,
-    idvar = idvar, timevar = timevar,
-    output_pred = fitted(first_stage), input = input,
-    method = "BFGS")
+  d <- data.table(input)
+  d$idvar <- idvar
+  d$timevar <- timevar
 
-    return(result)
+  d$output_pred <- fitted(first_stage)
+  setnames(d, c("1.0.0", "0.1.0"), c("labor", "capital"))
+
+  d$labor.lag <- lagPanel(idvar, timevar, d$labor)
+  d$capital.lag <- lagPanel(idvar, timevar, d$capital)
+  d$output.lag <- lagPanel(idvar, timevar, d$output_pred)
+
+  d <- na.omit(d)
+
+  b <- boot::boot(data.frame(d),
+    function(x, i) optim(par = param0, fn = gmm_loss, d = x[i, ], method = "BFGS")$par,
+    R = num_bootstrap, parallel = "multicore")
+
+  return(b)
 }
 
 # Test ground
-prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1)
+
+prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1, num_bootstrap = 100)
+
 
 # prodestACF gives the same Cobb-Douglas results for the Chilean test data.
 # prodestACF does not allow for a translog production function.
 prodestACF(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
-
-
-# FOr the future, implement bootstrapped stadard errors.
-capital <- chilean$sX
-labor <- chilean$fX2
-material <- chilean$pX
-idvar <- chilean$idvar
-timevar <- chilean$timevar
-degree <- 1
-output <- chilean$Y
-params <- param0
-output_pred <- fitted(first_stage)
-
-
-polyframe <- data.frame(chilean$fX2, chilean$sX, chilean$pX)
-head(model.matrix(~.^2 - 1, data = polyframe))
-
-perform_block_bootstrap <- function(df, num_bootstraps = 1000) {
-    n <- nrow(df)
-    # Sample with replacement, maintaining block structure
-    bootstrap_estimates <- numeric(length = num_bootstraps)
-    for (i in 1:num_bootstraps) {
-        bootstrap_sample <- df[sample(1:n, replace = TRUE), ]
-        bootstrap_estimates[i] <- prod_est(bootstrap_sample,
-            "prod_value", "employees", "capital", "input_goods")
-        }
-
-    return(bootstrap_estimates)
-  }
