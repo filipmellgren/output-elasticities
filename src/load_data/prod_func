@@ -12,8 +12,8 @@ gmm_loss <- function(params, idvar, timevar, output_pred, input) {
   
   first_order_vars <- input[, attributes(input)$degree == 1]
   d$output_pred <- output_pred
-  d$capital <- first_order_vars[, 1]
-  d$labor <- first_order_vars[, 2]
+  d$labor <- first_order_vars[, 1]
+  d$capital <- first_order_vars[, 2]
   
   d$labor.lag <- lagPanel(idvar, timevar, d$labor)
   d$capital.lag <- lagPanel(idvar, timevar, d$capital)
@@ -55,17 +55,12 @@ gmm_loss <- function(params, idvar, timevar, output_pred, input) {
 }
 
 prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 2) {
-  input <- polym(capital, labor, material, degree = 2, raw = TRUE)
+  input <- polym(labor, capital, material, degree = 2, raw = TRUE)
 
-  first_stage <- lm(output ~ input)  
-  # Z includes labor.lag, capital
-  # X includes labor, capital
-  # lX includes labor.lag, capital.lag
-  # regvars <-  cbind(mod, fX^2, sX^2, pX^2)
-  param0 <- rep(1, degree ^2 + 1) / (degree ^2 + 1) + rnorm(degree ^2 + 1, 0, 0.01)
-  param0[1] <- coef(first_stage)[4]
-  param0[2] <- coef(first_stage)[2]
-  #param0 <- coef(first_stage)[2:(1 + degree)] + rnorm((2, 0, 0.01)
+  first_stage <- lm(output ~ input)
+  param0 <- first_stage$coef[c(FALSE, attributes(input)$degree <= degree)]
+  param0 <- param0[1:(degree^2 + 1)] + rnorm(degree^2 + 1, 0, 0.01)
+
   result <- optim(par = param0, fn = gmm_loss,
     idvar = idvar, timevar = timevar,
     output_pred = fitted(first_stage), input = input,
@@ -73,6 +68,13 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
 
     return(result)
 }
+
+capital <- chilean$sX
+labor <- chilean$fX2
+material <- chilean$pX
+degree <- 1
+output <- chilean$Y
+
 
 # Test ground
 # TODO: it works for Cobb Douglas. Test for Translog.
