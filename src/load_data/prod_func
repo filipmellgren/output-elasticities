@@ -6,7 +6,7 @@ head(chilean)
 gmm_loss <- function(params, idvar, timevar, output_pred, input) {
   
   degree <- sqrt(length(params) - 1)
-  # Step 2: Estimate productivity
+
   d <- data.table(input)
   d$idvar <- idvar
   d$timevar <- timevar
@@ -16,7 +16,6 @@ gmm_loss <- function(params, idvar, timevar, output_pred, input) {
 
   d$labor.lag <- lagPanel(idvar, timevar, d$labor)
   d$capital.lag <- lagPanel(idvar, timevar, d$capital)
-  
   d$output.lag <- lagPanel(idvar, timevar, d$output_pred)
 
   d <- na.omit(d)
@@ -27,21 +26,41 @@ gmm_loss <- function(params, idvar, timevar, output_pred, input) {
   prod_vars.lag <- polym(d$labor.lag, d$capital.lag, degree = degree, raw = TRUE)
   prodest_lag <- d$output.lag - prod_vars.lag %*% params
 
-  prodest_lag <- polym(prodest_lag, degree = 3, raw = TRUE)
+  g_prod <- polym(prodest_lag, degree = 3, raw = TRUE)
 
   Z <- polym(d$labor.lag, d$capital, degree = degree, raw = TRUE)
   W <- solve(crossprod(Z)) / nrow(d)
 
-  expected_prod <- fitted(lm(d$prod_est ~ prodest_lag))
+  expected_prod <- fitted(lm(d$prod_est ~ g_prod))
 
   XI <- d$prod_est - expected_prod # Productivity shocks
 
   crit <- t(crossprod(Z, XI)) %*% W %*% (crossprod(Z, XI))
-  
+
   return(crit)
 }
 
 prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 2) {
+  #' Estimate production function parameters
+  #' Caution: Results can be unstable and depend on optimization algorithm.
+  #' Need to implement bootstrapped standard errors to quantify uncertainty.
+  #' 
+  #' In the first stage, predict the production function.
+  #' we "control for" productivity by including material input.
+  #' The fitted values from this prediction are purged from measurement error.
+  
+  #' @param output Output variable. Can be quantity or revenue.
+  #' @param labor Labor input column.
+  #' @param capital Capital input column.
+  #' @param material Material input column, e.g. input goods.
+  #' Needs to correlate with productivity so that the firm only
+  #' chooses more material when the productivity shock is high.
+  #' @param idvar ID variable of the firm in the data set.
+  #' @param timevar Time variable of the firm in the data set.
+  #' @param degree Degree of the polynomial.
+  #' * 1 for Cobb-Douglas production function.
+  #' * 2 for Translog productivity.
+  #' @return optim output inlcuding estimated parameters.
   input <- polym(labor, capital, material, degree = 2, raw = TRUE)
 
   first_stage <- lm(output ~ input)
@@ -56,6 +75,15 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
     return(result)
 }
 
+# Test ground
+prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1)
+
+# Gives the same result when degree == 1, the Cobb-Douglas case.
+# prodestACF does not allow for a translog production function.
+prodestACF(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
+
+
+# FOr the future, implement bootstrapped stadard errors.
 capital <- chilean$sX
 labor <- chilean$fX2
 material <- chilean$pX
@@ -66,24 +94,6 @@ output <- chilean$Y
 params <- param0
 output_pred <- fitted(first_stage)
 
-
-# Test ground
-# TODO: it works for Cobb Douglas. Test for Translog.
-prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1)
-
-# TODO: names for coefficents and clearer what input is. Also notice I haven't calucalted output elasticities yet.
-# TODO: CObb-Douglas case
-# use lapply() over groups. 
-# TODO: Bootstrap standard errors
-
-prodestACF(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
-
-prodestWRDG(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
-prodestWRDG_GMM(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
-myestims <- prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
-
-# Y, fX, sX, pX, idvar, timevar
-head(polym(capital, labor, degree = 1, raw = TRUE))
 
 polyframe <- data.frame(chilean$fX2, chilean$sX, chilean$pX)
 head(model.matrix(~.^2 - 1, data = polyframe))
