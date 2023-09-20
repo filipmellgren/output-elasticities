@@ -4,28 +4,31 @@ data(chilean)
 head(chilean)
 
 gmm_loss <- function(params, idvar, timevar, output_pred, input) {
+  
   degree <- sqrt(length(params) - 1)
   # Step 2: Estimate productivity
+  d <- data.table(input)
+  d$idvar <- idvar
+  d$timevar <- timevar
 
-  d <- data.table(cbind(idvar, timevar))
-  names(d) <- c("idvar", "timevar")
-  
-  first_order_vars <- input[, attributes(input)$degree == 1]
   d$output_pred <- output_pred
-  d$labor <- first_order_vars[, 1]
-  d$capital <- first_order_vars[, 2]
-  
+  setnames(d, c("1.0.0", "0.1.0"), c("labor", "capital"))
+
   d$labor.lag <- lagPanel(idvar, timevar, d$labor)
   d$capital.lag <- lagPanel(idvar, timevar, d$capital)
-  d$output.lag <- lagPanel(idvar, timevar, output_pred)
-  d$prod_est <- d$output_pred -  cbind(d$labor, d$capital) %*% params
-  d$prod_est.lag <- d$output.lag - cbind(d$labor.lag, d$capital.lag) %*% params
   
+  d$output.lag <- lagPanel(idvar, timevar, d$output_pred)
+
   d <- na.omit(d)
+
+  prod_fun_vars <- polym(d$labor, d$capital, degree = degree, raw = TRUE)
+  d$prod_est <- d$output_pred - prod_fun_vars %*% params
+
+  prod_fun_vars.lag <- polym(d$labor.lag, d$capital.lag, degree = degree, raw = TRUE)
+  d$prod_est.lag <- d$output.lag - prod_fun_vars.lag %*% params
 
   prod_est.lag_pol <- as.matrix(polym(d$prod_est.lag, degree = 3))
   prod_est.lag_pol <- cbind(prod_est.lag_pol , 1)
-
   
   mZ <- cbind(d$labor.lag, d$capital)
   mW <- solve(crossprod(cbind(d$labor.lag, d$capital))) / nrow(d)
@@ -64,7 +67,7 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
   result <- optim(par = param0, fn = gmm_loss,
     idvar = idvar, timevar = timevar,
     output_pred = fitted(first_stage), input = input,
-    method = "BFGS")
+    method = "L-BFGS-B")
 
     return(result)
 }
