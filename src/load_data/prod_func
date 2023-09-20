@@ -78,7 +78,7 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
 # Test ground
 prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1)
 
-# Gives the same result when degree == 1, the Cobb-Douglas case.
+# prodestACF gives the same Cobb-Douglas results for the Chilean test data.
 # prodestACF does not allow for a translog production function.
 prodestACF(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
 
