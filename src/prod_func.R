@@ -2,25 +2,26 @@ library(prodest)
 library(data.table)
 library(boot)
 library(fixest)
+library(profvis)
+#library(collapse) flag use this to lag fast
+# Is there any way to not use the polym function as often?
 
-gmm_loss <- function(params, d) {
+gmm_loss <- function(params, prod_vars, prod_vars.lag, output_pred, output.lag, Z, W) {
 
   degree <- sqrt(length(params) - 1)
 
-  prod_vars <- polym(d$labor, d$capital, degree = degree, raw = TRUE)
-  d$prod_est <- d$output_pred - prod_vars %*% params
+  prod_est <- output_pred - prod_vars %*% params
 
-  prod_vars.lag <- polym(d$labor.lag, d$capital.lag, degree = degree, raw = TRUE)
-  prodest_lag <- d$output.lag - prod_vars.lag %*% params
+  prodest_lag <- output.lag - prod_vars.lag %*% params
 
   g_prod <- polym(prodest_lag, degree = 3, raw = TRUE)
 
-  Z <- polym(d$labor.lag, d$capital, degree = degree, raw = TRUE)
-  W <- solve(crossprod(Z)) / nrow(d)
+  #Z <- polym(d$labor.lag, d$capital, degree = degree, raw = TRUE)
+ # W <- solve(crossprod(Z)) / nrow(prod_est)
 
-  expected_prod <- fitted(lm(d$prod_est ~ g_prod))
+  expected_prod <- fitted(lm(prod_est ~ g_prod))
 
-  xi <- d$prod_est - expected_prod # Productivity shocks
+  xi <- prod_est - expected_prod # Productivity shocks
 
   crit <- t(crossprod(Z, xi)) %*% W %*% (crossprod(Z, xi))
 
@@ -62,21 +63,50 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
   d <- panel(d, panel.id = ~idvar + timevar)
   d$labor.lag <- lagPanel(idvar, timevar, d$labor)
   d$capital.lag <- lagPanel(idvar, timevar, d$capital)
-  d$output.lag <- lagPanel(idvar, timevar, d$output_pred)
-
-  # Why won't this work?
-  #d <- panel(d, panel.id = ~idvar + timevar
-  #d[, "labor.lag" := l("labor")]
-  #d[, capital.lag := l("capital")]
-  #d[, output.lag := l("output_pred")]
+  d$lag_output <- lagPanel(idvar, timevar, d$output_pred)
 
   d <- na.omit(d)
 
-  b <- boot::boot(d,
-    function(x, i) optim(par = param0, fn = gmm_loss, d = x[i, ], method = "BFGS")$par,
-    R = num_bootstrap, parallel = "multicore") # "multicore" is not available on Windows. Use "snow" instead.
+  prod_vars <- polym(d$labor, d$capital, degree = degree, raw = TRUE)
+  lag_prod_vars <- polym(d$labor.lag, d$capital.lag, degree = degree, raw = TRUE)
+
+  Z <- polym(d$labor.lag, d$capital, degree = degree, raw = TRUE)
+  W <- solve(crossprod(Z)) / nrow(Z)
+
+  data <- data.frame(
+    prod_vars = data.frame(prod_vars),
+    lag_prod_vars = data.frame(lag_prod_vars),
+    output_pred = data.frame(d$output_pred),
+    lag_output = data.frame(d$lag_output),
+    Z = data.frame(Z))
+
+  # "multicore" is not available on Windows. Use "snow" instead.
+  b <- boot::boot(data, boot_sol, param0 = param0, R = num_bootstrap, parallel = "multicore") 
 
   return(b)
+}
+
+boot_sol <- function(x, i, param0){
+  #' Function to solve the GMM problem on indedxed data.
+  #' Used to bootstrap the standard errors.
+    x <- x[i, ]
+    prod_vars <- as.matrix(x[, grepl("^prod_vars", colnames(x)), drop = FALSE])
+    prod_vars.lag <- as.matrix(x[, grepl("lag_prod_vars", colnames(x)), drop = FALSE])
+    output_pred <- as.matrix(x[, grepl("output_pred", colnames(x)), drop = FALSE])
+    output.lag <- as.matrix(x[, grepl("lag_output", colnames(x)), drop = FALSE])
+    Z <- as.matrix(x[, grepl("Z", colnames(x)), drop = FALSE])
+    W <- solve(crossprod(Z)) / nrow(Z)
+    sol <- optim(
+      par = param0,
+      fn = gmm_loss,
+      prod_vars = prod_vars,
+      prod_vars.lag = prod_vars.lag,
+      output_pred = output_pred,
+      output.lag = output.lag,
+      Z = Z,
+      W = W,
+      method = "BFGS")$par
+    return(sol)
 }
 
 
@@ -89,7 +119,12 @@ material <- chilean$pX
 idvar <- chilean$idvar
 timevar <- chilean$timevar
 degree <- 1
-prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1, num_bootstrap = 10)
+
+
+prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1, num_bootstrap = 2)
+
+
+
 
 
 
