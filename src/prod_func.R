@@ -4,25 +4,43 @@ library(boot)
 library(fixest)
 library(profvis)
 #library(collapse) flag use this to lag fast
-# Is there any way to not use the polym function as often?
+
 
 gmm_loss <- function(params, prod_vars, prod_vars.lag, output_pred, output.lag, Z, W) {
-
+#' Calculate the GMM loss function for a given set of parameters.
+#' Moment conditions:
+#' * Current capital is:
+#'  orthogonal to the productivity shock.
+#' * Lagged labor is:
+#'  1. (exogenous )orthogonal to the productivity shock.
+#'  2. (relevant) correlated with current labor.
+#'  3. (exclusion restriction) Does not affect current output.
+#' Given the parameter guesses, we can estimate the productivity,
+#' infer what the shocks are given that productivity follows a Markov process
+#' and calculate the moment conditions from our assumptions about input choices.
+#' This process can be iterated on until the loss is low enough.
+#' @param params Parameter vector.
+#' @param prod_vars Matrix of current inputs.
+#' @param prod_vars.lag Matrix of lagged inputs.
+#' @param output_pred Predicted output from first stage.
+#' @param output.lag Lagged output.
+#' @param Z Matrix of instruments (lagged labor and current capital).
+#' @param W Weighting matrix.
+#' @return GMM loss function.
   degree <- sqrt(length(params) - 1)
 
+  # Estimate productivity (lag) from output, inputs and guessed parameters.
   prod_est <- output_pred - prod_vars %*% params
-
   prodest_lag <- output.lag - prod_vars.lag %*% params
 
+  # Productivity follows a Markov process, predict it using its own lag.
   g_prod <- polym(prodest_lag, degree = 3, raw = TRUE)
-
-  #Z <- polym(d$labor.lag, d$capital, degree = degree, raw = TRUE)
- # W <- solve(crossprod(Z)) / nrow(prod_est)
-
   expected_prod <- fitted(lm(prod_est ~ g_prod))
+  
+  # Form productivity shocks
+  xi <- prod_est - expected_prod 
 
-  xi <- prod_est - expected_prod # Productivity shocks
-
+  # Use moment conditions to calculate the GMM loss function.
   crit <- t(crossprod(Z, xi)) %*% W %*% (crossprod(Z, xi))
 
   return(crit)
@@ -71,7 +89,6 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
   lag_prod_vars <- polym(d$labor.lag, d$capital.lag, degree = degree, raw = TRUE)
 
   Z <- polym(d$labor.lag, d$capital, degree = degree, raw = TRUE)
-  W <- solve(crossprod(Z)) / nrow(Z)
 
   data <- data.frame(
     prod_vars = data.frame(prod_vars),
@@ -80,8 +97,9 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
     lag_output = data.frame(d$lag_output),
     Z = data.frame(Z))
 
-  # "multicore" is not available on Windows. Use "snow" instead.
-  b <- boot::boot(data, boot_sol, param0 = param0, R = num_bootstrap, parallel = "multicore") 
+  # Don't use parallelization for bootstrapping.
+  # Instead, parallelize the different subgroups/sectors in the data. 
+  b <- boot::boot(data, boot_sol, param0 = param0, R = num_bootstrap, parallel = "no") 
 
   return(b)
 }
@@ -89,6 +107,11 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
 boot_sol <- function(x, i, param0){
   #' Function to solve the GMM problem on indedxed data.
   #' Used to bootstrap the standard errors.
+  #' From the data x, sample with replacement using the i index.
+  #' Select the right rows and solve the GMM problem on the new sample.
+  #' @param x Data frame with all variables.
+  #' @param i Index of the data frame.
+  #' @param param0 Initial parameter guess.
     x <- x[i, ]
     prod_vars <- as.matrix(x[, grepl("^prod_vars", colnames(x)), drop = FALSE])
     prod_vars.lag <- as.matrix(x[, grepl("lag_prod_vars", colnames(x)), drop = FALSE])
@@ -111,69 +134,5 @@ boot_sol <- function(x, i, param0){
 
 
 data(chilean)
-# head(chilean)
-output <- chilean$Y
-labor <- chilean$fX2
-capital <- chilean$sX
-material <- chilean$pX
-idvar <- chilean$idvar
-timevar <- chilean$timevar
-degree <- 1
 
-
-prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1, num_bootstrap = 2)
-
-
-
-
-
-
-# prodestACF gives the same Cobb-Douglas results for the Chilean test data.
-# prodestACF does not allow for a translog production function.
-
-prodestACF(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar)
-
- boot_func <- function(x) {
-    optim(par = param0, fn = gmm_loss, d = x, method = "BFGS")$par
-  }
-  
-cl <- makeCluster(parallel::detectCores() - 1)  # Use all available cores except one
-b <- boot(data.frame(d), boot_func, R = num_bootstrap, parallel = "snow", cl = cl)
-stopCluster(cl)
-
-#profvis
-
-# Test ground ####
-df <- read.csv("data/datos_seguimiento_enia.csv")
-df  |> nrow()
-df |> head()
-df <- df |> group_by(id_firma, id_planta, periodo) |>
-  mutate(n = n()) |>
-  filter(n == 1) |>
-  ungroup()
-df |> distinct(periodo,id_firma,id_planta)
-# Select variables using data.table functionality
-d2 <- df[, c("id_firma", "id_planta", "periodo", "b021", "c005", "h011", "i001")]
-# TODO: write test cases in code to confirm that the data is in the right format
-d2[["id"]] <- d2 |>
-    group_by(id_firma, id_planta)  |>
-    group_indices()
-
-
-idvar <- d2$id
-d2 <- data.table(d2)
-d2 <- na.omit(d2)
-d2 <- data.frame(d2)
-tmp <- prod_est(d2$i001, d2$b021, d2$h011, d2$c005, d2$id, d2$periodo, degree = 1, num_bootstrap = 1)
-
-
-output <- d2$i001
-labor <- d2$b021
-capital <- d2$h011
-material <- d2$c005
-idvar <- d2$id
-timevar <- d2$periodo
-degree <- 1
-num_bootstrap <- 10
-
-d2  |> distinct(periodo)
+prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1, num_bootstrap = 10)
