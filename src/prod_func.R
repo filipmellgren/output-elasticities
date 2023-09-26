@@ -99,9 +99,11 @@ prod_est <- function(output, labor, capital, material, idvar, timevar, degree = 
 
   # Don't use parallelization for bootstrapping.
   # Instead, parallelize the different subgroups/sectors in the data. 
-  b <- boot::boot(data, boot_sol, param0 = param0, R = num_bootstrap, parallel = "no") 
-
-  return(b)
+  b <- boot::boot(data, boot_sol, param0 = param0, R = num_bootstrap, parallel = "no")
+  prod <- d$output_pred - prod_vars %*% b$t0
+  prod <- cbind(prod = prod, idvar = d$idvar, timevar = d$timevar)
+  
+  return(list(b, prod))
 }
 
 boot_sol <- function(x, i, param0){
