@@ -1,200 +1,39 @@
+# Order of operations for obtaining production function at the firm level.
 library(dplyr)
 library(tidylog)
 library(collapse) # Pkg for efficient weighted group means, sums etc.
-library(prodest) # Pkg for estimating production functions
 source("src/load_data/load.R") # For loading data
+#source("src/clean_func.R")
+library(fixest)
+source("src/prod_func.R")
+#TODO UHV data for more prices
 
-# PPI deflator ####
-BASEYEAR <- 1997
-ppi <- read.csv("data/ppi.csv", header = FALSE)
-ppi$year <- parse_number(ppi$V1)
-ppi <- ppi[3:nrow(ppi),]
-ppi <- ppi %>% group_by(year) %>% summarize(index = mean(as.numeric(V2))) %>% ungroup()
-ppi$index <- ppi$index / pull(subset(ppi, year == BASEYEAR, index))
+IVP_PATH <- "output/clean_qdata.csv"
+FEK_PATH <- "output/fek.csv"
 
-# FEK ####
-# Load data
-download_fek() # From SCB's server if unavailable.
-fek_filepaths <-  paste0("data/fek/", list.files("data/fek", pattern = "^FE"))
-fek <- load_data(fek_filepaths)
-fek <- fix_sni(fek)
-
-# Rename columns
-fek <- fek %>%
-  select(
-    firm_id = LopNr_PeOrgNrHE,
-    employees = MedelantalAnstallda,
-    wage_cost = KostnaderForLonerOchAndraErsattningar,
-    commodity_cost = KostnaderForRavaror,
-    input_goods = KostnaderForHandelsvaror,
-    capital = SummaMateriellaAnlaggningstillgangar,
-    intangibles = SummaImmateriellaAnlaggningstillgangar,
-    value_added = Foradlingsvarde,
-    prod_value = Produktionsvarde,
-    year,
-    sni_regime, sni, sni2, sni3, sni4
-    )
-
-# Keep sane observations
-fek <- fek[employees >= 10]
-fek <- fek[capital > 0]
-fek$wage_cost <- -fek$wage_cost
-fek <- fek[wage_cost > 0]
-fek <- fek[value_added > 0]
-fek <- fek[prod_value > 0]
-fek$input_goods <- -fek$input_goods
-fek <- fek[input_goods > 0]
-
-# Define new variables
-fek <- merge(fek, ppi)
-fek$wage_cost <- fek$wage_cost / fek$index
-fek$value_added <- fek$value_added / fek$index
-fek$prod_value <- fek$prod_value / fek$index
-fek$labor_share <- fek$wage_cost / fek$value_added
-
-# IVP ####
-# Load data
-ivp_files <- list.files("data/ivp", pattern = "^IVP")
-ivp <- load_data(paste0("data/ivp/", ivp_files))
-ivp[["good_id"]] <-  ivp  |>
-    group_by(VaruNr, KvantText)  |>
-    group_indices()
-
-# Rename variables
-ivp <- ivp |>
-    select(firm_id = LopNr_PeOrgNrHE,
-    year = Ar,
-    good_id,
-    value = ProdVarde,
-    q = Totkvant)
-
-# Keep sane values
-ivp <- ivp |> filter(value > 0 & !is.na(value) & q > 0 & !is.na(q))
-
-# Define new variables
-ivp <- merge(ivp, ppi)
-ivp$value <- ivp$value / ivp$index
-ivp$p <- ivp$value / ivp$q
-
-# Standardize price
-good_mean_price <- ivp |>
-  fgroup_by(good_id, year) |>
-  fselect(p) |>
-  fmean(w = ivp$revenue)
-names(good_mean_price) <- c("good_id", "year", "good_mean_price")
-
-ivp <- merge(ivp, good_mean_price, by = c("good_id", "year"))
-ivp$p <- ivp$p / ivp$good_mean_price
-
-firm_revenue <- ivp %>% group_by(year, firm_id) %>%
-  summarise(firm_revenue = sum(value)) %>% ungroup()
-
-ivp <- ivp |>
-  fgroup_by(firm_id, year) |>
-  fselect(p) |>
-  fmean(w = ivp$value)
-
-ivp <- merge(ivp, data.table(firm_revenue), by = c("year", "firm_id"))
-
-# Trim observations
-QTILE_TRIM <- 0.02
-low_p <- quantile(ivp$p, QTILE_TRIM)
-high_p <- quantile(ivp$p, 1 - QTILE_TRIM)
-
-ivp <- subset(ivp, ivp$p > low_p & ivp$p < high_p)
-
-# Combine ####
-df <- merge(ivp, fek, by = c("firm_id", "year"))
-
-cor(df$firm_revenue, df$prod_value) # Note only 0.48 cor between fek and ivp prod val.
-
-# Note, quantity defined using FEK production value, not IVP prod value from where price came.
-df$q <- df$prod_value / df$p
-
-log_dev_from_mean <- function(var) {
-  return(log(var) - mean(log(var)))
+# Get FEK DATA, do minor cleaning
+if (!file.exists(FEK_PATH)){
+  source("src/clean_fek.R")
 }
 
-df$q <- log_dev_from_mean(df$q)
-df$val <- log_dev_from_mean(df$prod_value)
-df$p <- log_dev_from_mean(df$p)
-df$v <- log_dev_from_mean(df$employees)
-df$k <- log_dev_from_mean(df$capital) 
-df$m <- log_dev_from_mean(df$input_goods)
+fek <- fread(FEK_PATH)
 
-# Estimate output elasticity for manufacturing ####
-MIN_OBS <- 50
-markup1.firm <- 0.5 # median firm has mu = 1.
-
-prodest_sector <- function(sector, yvar, df) {
-  tmp <- data.table(df)[group_id == sector]
-  fit <- prodestWRDG_GMM(Y = tmp[[yvar]],
-                         fX = tmp$v,
-                         sX = tmp$k,
-                         pX = tmp$m,
-                         idvar = tmp$firm_id,
-                         timevar = tmp$year
-  )
-  estims <- t(data.frame(fit@Estimates$pars))
-  std.errors <- t(data.frame(fit@Estimates$std.errors))
-
-  return(cbind("group_id" = sector, estim = estims[[1]], se = std.errors[[1]]))
+# Get IVP DATA
+# Clean the data, obtain a price variable at the firm level.
+if (!file.exists(IVP_PATH)){
+  source("src/clean_ivp.R")
 }
 
-df[["group_id"]] <-  df  |>
-  group_by(sni2, sni_regime)  |>
-  group_indices()
+df <- fread(IVP_PATH)
 
-groupid.key <- df %>%
-  distinct(group_id, sni2, sni_regime)
-
-sectors <- df %>% group_by(group_id) %>%
-  summarise(count = n()) %>%
-  ungroup() %>% filter(count >= MIN_OBS) %>%
-  pull(group_id)
-
-tmp <- lapply(sectors, prodest_sector, "q", df)
-prod_fun.q <- data.frame(do.call(rbind, tmp))
-
-tmp <- lapply(sectors, prodest_sector, "val", df)
-prod_fun.val <- data.frame(do.call(rbind, tmp))
-
-oelas.cost_share <- df |>
-  group_by(group_id) |>
-  summarise(oelas.cost_share = quantile(labor_share , markup1.firm)) |>
-  ungroup()
-
-output_elasticities <- merge(oelas.cost_share, prod_fun.q, all.x = TRUE) 
-output_elasticities <- merge(output_elasticities, groupid.key)
-write.csv(output_elasticities, "output/ivp_oelas.csv")
-
-# For FEK data only, accepting the slight p bias. ####
-df <- fek
-df[["group_id"]] <-  df  |>
-  group_by(sni4, sni_regime)  |>
-  group_indices()
-df$val <- log_dev_from_mean(df$prod_value)
-df$v <- log_dev_from_mean(df$employees)
-df$k <- log_dev_from_mean(df$capital) 
-df$m <- log_dev_from_mean(df$input_goods)
-
-sectors <- df %>% group_by(group_id) %>%
-  summarise(count = n()) %>%
-  ungroup() %>% filter(count > 1000) %>%
-  pull(group_id)
-
-tmp1 <- lapply(sectors, prodest_sector, "val", df)
-prod_fun <- do.call(rbind, tmp1)
-
-# Next, estimate markups using a cost share approach.
-# This assumes the median firm has a markup of 1.
-cost_share_o_elas <- df |> group_by(group_id) |>
-    summarise(cost_share_o_elas = quantile(labor_share , 0.5)) |>
-    ungroup()
-
-o_elas <- merge(cost_share_o_elas, prod_fun)
-
-cor(o_elas$fX1, o_elas$cost_share_o_elas)
+# Estimate TFPQ using the ACF procedure by 2 digit SNI sector.
 
 
+if (!file.exists("output/tl_prod.csv")){
+  source("src/prod_estim.R")
+}
 
+# In addition, estimate TFPR for FEK-data.
+if (!file.exists("output/fek_tl_prod.csv")){
+  source("src/prod_estim_tfpr.R")
+}

@@ -1,7 +1,7 @@
 library(RODBC)
 library(tidyverse)
 library(data.table)
-library(furrr)
+#library(furrr)
 
 gen_datanames <- function(prefix, year){
   out <- paste0(prefix, year)

@@ -135,6 +135,20 @@ boot_sol <- function(x, i, param0){
 }
 
 
-data(chilean)
-
-prod_est(chilean$Y, chilean$fX2, chilean$sX, chilean$pX, chilean$idvar, chilean$timevar, degree = 1, num_bootstrap = 10)
+prodest_sector <- function(sector, yvar, df, degree, num_bootstrap) {
+  tmp <- data.table(df)[group_id == sector]
+  fit <- prod_est(tmp[[yvar]],
+                  tmp$v,
+                  tmp$k,
+                  tmp$m,
+                  idvar = tmp$firm_id,
+                  timevar = tmp$year,
+                  degree = degree,
+                  num_bootstrap = num_bootstrap)
+  
+  estims <- fit[[1]]$t0
+  std.errors <- summary(fit[[1]])$bootSE
+  
+  return(list(cbind(summary(fit[[1]]), "group_id" = sector, param = names(fit[[1]]$t0)), fit[[2]]))
+  
+}
